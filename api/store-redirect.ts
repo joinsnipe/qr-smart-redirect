@@ -8,7 +8,7 @@ export default async function handler(req: Request) {
   const url = new URL(req.url);
   const ua  = (req.headers.get("user-agent") || "").toLowerCase();
 
-  // Forzar en pruebas: ?os=ios|android|fallback
+  // Forzado para pruebas: ?os=ios|android|fallback
   const forced = url.searchParams.get("os");
   if (forced === "ios")     return redirect(IOS_URL);
   if (forced === "android") return redirect(ANDROID_URL);
@@ -23,7 +23,7 @@ export default async function handler(req: Request) {
 
 function redirect(target: string) {
   return new Response(null, {
-    status: 302, // editable
+    status: 302,
     headers: {
       "Location": target,
       "Cache-Control": "private, max-age=300", // 5 min por dispositivo
