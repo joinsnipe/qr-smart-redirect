@@ -113,8 +113,9 @@ export default async function handler(req: Request) {
     let probe:any = null;
     if (url.searchParams.get("probe") === "1") {
       try {
-        const notionToken = process.env.NOTION_TOKEN!;
-        const notionDbId  = process.env.NOTION_DB_ID!;
+        const notionToken = (process.env.NOTION_TOKEN || "").trim();
+        const notionDbId  = (process.env.NOTION_DB_ID || "").trim();
+
         const headers = {
           "Authorization": `Bearer ${notionToken}`,
           "Notion-Version": "2022-06-28",
@@ -170,8 +171,9 @@ export default async function handler(req: Request) {
   let pageId: string | null = null;
   let seqNumber: number | null = null;
   try {
-    const notionToken = process.env.NOTION_TOKEN!;
-    const notionDbId  = process.env.NOTION_DB_ID!;
+    const notionToken = (process.env.NOTION_TOKEN || "").trim();
+    const notionDbId  = (process.env.NOTION_DB_ID || "").trim();
+
     const headers = {
       "Authorization": `Bearer ${notionToken}`,
       "Notion-Version": "2022-06-28",
