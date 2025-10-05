@@ -4,7 +4,7 @@ export const config = { runtime: "edge" };
 const HANDLER_SIGNATURE = "store-redirect.ts@2025-10-05T20:50Z";
 
 /** ---------------- Ajustes de contador ---------------- **/
-const SEQ_OFFSET = 0;
+const SEQ_OFFSET = -33; // 🔁 si el último Seq real en Notion es 33, el siguiente mostrará 000
 function pad3(n: number) {
   const s = String(n);
   return s.length >= 3 ? s : "0".repeat(3 - s.length) + s;
@@ -221,7 +221,8 @@ export default async function handler(req: Request) {
     // Actualizar nombre final con contador (si tenemos pageId)
     if (pageId !== null) {
       const displaySeq = (seqNumber ?? 0) + SEQ_OFFSET;
-      const finalName = `${campaignPretty} / ${pad3(displaySeq)}${qrId ? ` / ${qrId}` : ""}`;
+      const safeSeq = displaySeq < 0 ? 0 : displaySeq; // evita negativos
+      const finalName = `${campaignPretty} / ${pad3(safeSeq)}${qrId ? ` / ${qrId}` : ""}`;
       await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
         method: "PATCH",
         headers,
@@ -247,5 +248,6 @@ export default async function handler(req: Request) {
     }
   });
 }
+
 
 
