@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-// IP anonimizada (IPv4 -> /24, IPv6 -> /64)
+// --- Utilidades ---
 function anonymizeIp(ip: string | null): string {
   if (!ip) return "";
   const first = ip.split(",")[0].trim();
@@ -12,6 +12,12 @@ function anonymizeIp(ip: string | null): string {
     if (a.length === 4) return `${a[0]}.${a[1]}.${a[2]}.0/24`;
     return first;
   }
+}
+function isPrivateIPv4(ip: string) {
+  const p = ip.split(".").map(Number);
+  if (p.length !== 4) return false;
+  const [a,b] = p;
+  return a===10 || (a===172 && b>=16 && b<=31) || (a===192 && b===168) || a===127;
 }
 function pickOS(ua: string) {
   if (/iphone|ipad|ipod/i.test(ua)) return "ios";
@@ -40,25 +46,39 @@ function pickDevice(ua: string) {
   return "other";
 }
 
+// Fallback por IP (rápido y con timeout)
 async function geolocateByIp(ip: string) {
-  // Límite de tiempo muy corto para no afectar UX
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 600);
+  const t = setTimeout(() => ctrl.abort(), 800);
   try {
     const r = await fetch(`https://ipapi.co/${encodeURIComponent(ip)}/json/`, { signal: ctrl.signal });
     clearTimeout(t);
-    if (!r.ok) return null;
-    const j = await r.json();
-    return {
-      city: j.city || "",
-      region: j.region || j.region_code || "",
-      country: j.country || j.country_code || "",
-      timezone: j.timezone || ""
-    };
-  } catch {
-    clearTimeout(t);
-    return null;
-  }
+    if (r.ok) {
+      const j = await r.json();
+      return {
+        city: j.city || "",
+        region: j.region || "",                // preferimos nombre completo
+        country: j.country || j.country_code || "",
+        timezone: j.timezone || ""
+      };
+    }
+  } catch { /* ignore */ }
+  // Segundo fallback
+  try {
+    const r2 = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`);
+    if (r2.ok) {
+      const j2 = await r2.json();
+      if (j2 && j2.success !== false) {
+        return {
+          city: j2.city || "",
+          region: j2.region || "",
+          country: j2.country_code || j2.country || "",
+          timezone: j2.timezone?.id || ""
+        };
+      }
+    }
+  } catch { /* ignore */ }
+  return null;
 }
 
 export default async function handler(req: Request) {
@@ -73,12 +93,12 @@ export default async function handler(req: Request) {
   let city     = req.headers.get("x-vercel-ip-city") || "";
   let timezone = req.headers.get("x-vercel-ip-timezone") || "";
 
-  const ipRaw  = req.headers.get("x-forwarded-for") || "";
+  const ipRaw   = req.headers.get("x-forwarded-for") || "";
   const ipFirst = ipRaw.split(",")[0].trim();
-  const ipAnon = anonymizeIp(ipFirst || null);
+  const ipAnon  = anonymizeIp(ipFirst || null);
 
-  // Si no tenemos ciudad/region, intentamos obtenerlas por IP (fallback)
-  if ((!city || !region) && ipFirst) {
+  // Si falta ciudad o región, probamos por IP (solo si no es privada)
+  if ((!city || !region) && ipFirst && !(/[:]/.test(ipFirst) /*ipv6 local?*/ || isPrivateIPv4(ipFirst))) {
     const g = await geolocateByIp(ipFirst);
     if (g) {
       city     = city || g.city;
@@ -88,7 +108,7 @@ export default async function handler(req: Request) {
     }
   }
 
-  // Tracking params
+  // Parámetros de tracking
   const campaign = url.searchParams.get("c") || "default";
   const qrId     = url.searchParams.get("q") || "";
 
@@ -103,15 +123,16 @@ export default async function handler(req: Request) {
   const browser = pickBrowser(ua);
   const device  = pickDevice(ua);
 
-  // ---- Log a Notion ----
+  // ----- Log a Notion (ID numérico primero) -----
   try {
     const notionToken = process.env.NOTION_TOKEN!;
     const notionDbId  = process.env.NOTION_DB_ID!;
-    const body = {
+
+    const pageBody = {
       parent: { database_id: notionDbId },
       properties: {
-        "Name":        { title: [{ text: { content: `Scan #${now}` } }] },
-        "ID":          { number: now },
+        "ID":          { number: now },                            // orden numérico
+        "Name":        { title: [{ text: { content: `#${now} ${campaign} ${os}` } }] },
         "Timestamp":   { date: { start: new Date(now).toISOString() } },
         "Epoch":       { number: now },
         "OS":          { select: { name: os } },
@@ -126,6 +147,7 @@ export default async function handler(req: Request) {
         "User Agent":  { rich_text: [{ text: { content: ua.slice(0, 1800) } }] },
         "Browser":     { rich_text: [{ text: { content: browser } }] },
         "Device":      { rich_text: [{ text: { content: device } }] },
+        // Si no quieres ver estas dos en la vista, simplemente ocúltalas:
         "Referrer":    { url: ref || null },
         "Request URL": { url: req.url }
       }
@@ -138,7 +160,7 @@ export default async function handler(req: Request) {
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(pageBody)
     });
     if (!res.ok) {
       const txt = await res.text();
@@ -148,7 +170,7 @@ export default async function handler(req: Request) {
     console.error("Notion fetch failed:", e);
   }
 
-  // Sin caché para registrar TODOS los escaneos
+  // sin caché para contar todos los escaneos
   return new Response(null, {
     status: 302,
     headers: {
