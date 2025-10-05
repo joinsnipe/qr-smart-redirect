@@ -75,8 +75,10 @@ export default async function handler(req: Request) {
     status: 302,
     headers: {
       Location: redirectUrl,
-      "Cache-Control": "private, max-age=300", // 5 min por dispositivo
+      // Importante: sin caché para contar todos los escaneos
+      "Cache-Control": "no-store",
       "Vary": "User-Agent"
     }
   });
+
 }
