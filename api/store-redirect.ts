@@ -12,26 +12,28 @@ export default async function handler(req: Request) {
   const iosUrl = "https://apps.apple.com/es/app/snipe/id6743317310";
   const androidUrl = "https://play.google.com/store/apps/details?id=com.joinsnipe.mobile.snipe&hl=es";
   const fallbackUrl = "https://joinsnipe.com";
+
   const os = isIOS ? "ios" : isAndroid ? "android" : "other";
   const redirectUrl = isIOS ? iosUrl : isAndroid ? androidUrl : fallbackUrl;
 
-  // --- LOG MÍNIMO A NOTION (con await) ---
+  // --- LOG A NOTION ---
   try {
     const notionToken = process.env.NOTION_TOKEN!;
-    const notionDbId  = process.env.NOTION_DB_ID!;
+    const notionDbId = process.env.NOTION_DB_ID!;
+
     const pageBody = {
       parent: { database_id: notionDbId },
       properties: {
-        "Name":       { title: [{ text: { content: `Scan - ${new Date().toISOString()}` } }] },
-        "Timestamp":  { date: { start: new Date().toISOString() } },
-        "OS":         { select: { name: os } },
-        "Country":    { rich_text: [{ text: { content: country } }] },
-        "Campaign":   { rich_text: [{ text: { content: campaign } }] },
+        "Name": { title: [{ text: { content: `Scan - ${new Date().toISOString()}` } }] },
+        "Timestamp": { date: { start: new Date().toISOString() } },
+        "OS": { select: { name: os } },
+        "Country": { rich_text: [{ text: { content: country } }] },
+        "Campaign": { rich_text: [{ text: { content: campaign } }] },
         "QR Version": { rich_text: [{ text: { content: "1" } }] }
       }
     };
 
-    const res = await fetch("https://api.notion.com/v1/pages", {
+    await fetch("https://api.notion.com/v1/pages", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${notionToken}`,
@@ -40,10 +42,6 @@ export default async function handler(req: Request) {
       },
       body: JSON.stringify(pageBody)
     });
-    if (!res.ok) {
-      const txt = await res.text();
-      console.error("Notion error:", res.status, txt);
-    }
   } catch (e) {
     console.error("Notion fetch failed:", e);
   }
@@ -52,8 +50,9 @@ export default async function handler(req: Request) {
     status: 302,
     headers: {
       Location: redirectUrl,
-      "Cache-Control": "private, max-age=300",
+      "Cache-Control": "no-store",
       "Vary": "User-Agent"
     }
   });
 }
+
