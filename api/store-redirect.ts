@@ -1,7 +1,14 @@
 export const config = { runtime: "edge" };
 
 // --- Firma de build ---
-const HANDLER_SIGNATURE = "store-redirect.ts@2025-10-05T17:41Z";
+const HANDLER_SIGNATURE = "store-redirect.ts@2025-10-05T20:50Z";
+
+/** ---------------- Ajustes de contador ---------------- **/
+const SEQ_OFFSET = 0;
+function pad3(n: number) {
+  const s = String(n);
+  return s.length >= 3 ? s : "0".repeat(3 - s.length) + s;
+}
 
 /* ---------------- Utilidades ligeras ---------------- */
 function anonymizeIp(ip: string | null): string {
@@ -53,10 +60,6 @@ function toTitleCampaign(raw: string) {
   const pretty = raw.replace(/[_-]+/g, " ").trim();
   return pretty.replace(/\S+/g, (w) => w[0]?.toUpperCase() + w.slice(1));
 }
-function pad3(n: number) {
-  const s = String(n);
-  return s.length >= 3 ? s : "0".repeat(3 - s.length) + s;
-}
 function rt(content: string) {
   const safe = content && content.trim() ? content : "Desconocido";
   return { rich_text: [{ text: { content: safe } }] };
@@ -105,8 +108,43 @@ export default async function handler(req: Request) {
   const target = os === "ios" ? iosUrl : os === "android" ? androidUrl : fallbackUrl;
   const store = os === "ios" ? "appstore" : os === "android" ? "playstore" : "fallback";
 
-  // --- Modo DEBUG ---
+  // --- Modo DEBUG (+ probe opcional) ---
   if (url.searchParams.get("debug") === "1") {
+    let probe:any = null;
+    if (url.searchParams.get("probe") === "1") {
+      try {
+        const notionToken = process.env.NOTION_TOKEN!;
+        const notionDbId  = process.env.NOTION_DB_ID!;
+        const headers = {
+          "Authorization": `Bearer ${notionToken}`,
+          "Notion-Version": "2022-06-28",
+          "Content-Type": "application/json"
+        };
+        const resp = await fetch("https://api.notion.com/v1/pages", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            parent: { database_id: notionDbId },
+            properties: { "Name": { title: [{ text: { content: "PROBE" } }] } }
+          })
+        });
+        if (resp.ok) {
+          const j = await resp.json();
+          // archivar para no ensuciar
+          await fetch(`https://api.notion.com/v1/pages/${j.id}`, {
+            method: "PATCH",
+            headers,
+            body: JSON.stringify({ archived: true })
+          });
+          probe = { ok: true, pageId: j.id };
+        } else {
+          probe = { ok: false, status: resp.status, text: await resp.text() };
+        }
+      } catch (e:any) {
+        probe = { ok:false, exception: String(e) };
+      }
+    }
+
     return new Response(
       JSON.stringify({
         signature: HANDLER_SIGNATURE,
@@ -117,13 +155,20 @@ export default async function handler(req: Request) {
           "x-real-ip": req.headers.get("x-real-ip"),
           "cf-connecting-ip": req.headers.get("cf-connecting-ip")
         },
-        ipAnon, campaignRaw, campaignPretty, qrId, target, store
+        ipAnon, campaignRaw, campaignPretty, qrId, target, store,
+        env: {
+          HAS_TOKEN: Boolean(process.env.NOTION_TOKEN) || false,
+          HAS_DB: Boolean(process.env.NOTION_DB_ID) || false
+        },
+        probe
       }, null, 2),
       { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }
     );
   }
 
   // --- Registro en Notion ---
+  let pageId: string | null = null;
+  let seqNumber: number | null = null;
   try {
     const notionToken = process.env.NOTION_TOKEN!;
     const notionDbId  = process.env.NOTION_DB_ID!;
@@ -151,7 +196,8 @@ export default async function handler(req: Request) {
       "Device":      rt(device)
     };
 
-    await fetch("https://api.notion.com/v1/pages", {
+    // Crear página
+    const createRes = await fetch("https://api.notion.com/v1/pages", {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -159,6 +205,31 @@ export default async function handler(req: Request) {
         properties
       })
     });
+
+    if (createRes.ok) {
+      const created = await createRes.json();
+      pageId = created.id || null;
+      const seqProp = created?.properties?.["Seq"]?.unique_id;
+      seqNumber = seqProp?.number ? Number(seqProp.number) : 0;
+    } else {
+      const txt = await createRes.text();
+      console.error("Notion create error:", createRes.status, txt);
+    }
+
+    // Actualizar nombre final con contador (si tenemos pageId)
+    if (pageId !== null) {
+      const displaySeq = (seqNumber ?? 0) + SEQ_OFFSET;
+      const finalName = `${campaignPretty} / ${pad3(displaySeq)}${qrId ? ` / ${qrId}` : ""}`;
+      await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({
+          properties: {
+            "Name": { title: [{ text: { content: finalName } }] }
+          }
+        })
+      });
+    }
   } catch (err) {
     console.error("Edge Notion exception:", err);
   }
@@ -174,6 +245,5 @@ export default async function handler(req: Request) {
     }
   });
 }
-
 
 
