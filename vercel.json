@@ -1,5 +1,0 @@
-{
-  "functions": {
-    "api/store-redirect.ts": { "runtime": "edge" }
-  }
-}
