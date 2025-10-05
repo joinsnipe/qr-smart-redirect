@@ -4,7 +4,7 @@ export const config = { runtime: "edge" };
 const HANDLER_SIGNATURE = "store-redirect.ts@2025-10-05T20:50Z";
 
 /** ---------------- Ajustes de contador ---------------- **/
-const SEQ_OFFSET = -33; // 🔁 si el último Seq real en Notion es 33, el siguiente mostrará 000
+const SEQ_OFFSET = -35; // 🔁 si el último Seq real en Notion es 35, el siguiente mostrará 000
 function pad3(n: number) {
   const s = String(n);
   return s.length >= 3 ? s : "0".repeat(3 - s.length) + s;
