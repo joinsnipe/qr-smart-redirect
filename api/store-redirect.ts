@@ -1,6 +1,9 @@
 export const config = { runtime: "edge" };
 
-/** -------- utilidades ligeras -------- */
+// --- Firma de build ---
+const HANDLER_SIGNATURE = "store-redirect.ts@2025-10-05T17:41Z";
+
+/* ---------------- Utilidades ligeras ---------------- */
 function anonymizeIp(ip: string | null): string {
   if (!ip) return "";
   const first = ip.split(",")[0].trim();
@@ -18,13 +21,13 @@ function pickOS(ua: string) {
   return "other";
 }
 function pickBrowser(ua: string) {
-  const u = ua.toLowerCase();
-  if (u.includes("edg/")) return "edge";
-  if (u.includes("opr/") || u.includes("opera")) return "opera";
-  if (u.includes("firefox/")) return "firefox";
-  if (u.includes("samsungbrowser")) return "samsung";
-  if (u.includes("crios/") || u.includes("chrome/")) return "chrome";
-  if (u.includes("safari/")) return "safari";
+  const l = ua.toLowerCase();
+  if (l.includes("edg/")) return "edge";
+  if (l.includes("opr/") || l.includes("opera")) return "opera";
+  if (l.includes("firefox/")) return "firefox";
+  if (l.includes("samsungbrowser")) return "samsung";
+  if (l.includes("crios/") || l.includes("chrome/")) return "chrome";
+  if (l.includes("safari/")) return "safari";
   return "other";
 }
 function pickDevice(ua: string) {
@@ -59,54 +62,54 @@ function rt(content: string) {
   return { rich_text: [{ text: { content: safe } }] };
 }
 
-/** -------- handler -------- */
+/* ---------------- Handler principal ---------------- */
 export default async function handler(req: Request) {
   const now = Date.now();
   const url = new URL(req.url);
   const ua  = req.headers.get("user-agent") || "";
 
-  // --- Geo headers + fallbacks ---
+  // Geo headers
   const country  = req.headers.get("x-vercel-ip-country") || "";
   const regionCd = req.headers.get("x-vercel-ip-country-region") || "";
-  // algunos edge hops pueden no inyectar city/timezone; añadimos fallbacks visibles
   const city     = req.headers.get("x-vercel-ip-city") || "";
   const timezone = req.headers.get("x-vercel-ip-timezone") || "";
 
-  // IP: intentar varias cabeceras por seguridad
+  // IP
   const ipFirst =
     (req.headers.get("x-forwarded-for") ||
      req.headers.get("x-real-ip") ||
      req.headers.get("cf-connecting-ip") ||
      "").split(",")[0].trim();
-  const ipAnon   = anonymizeIp(ipFirst || null);
+  const ipAnon = anonymizeIp(ipFirst || null);
 
-  // Región bonita (ES) o código crudo si no hay mapeo, nunca vacío
+  // Región bonita
   const regionNice =
     country === "ES" && ES_REGION_MAP[regionCd as keyof typeof ES_REGION_MAP]
       ? ES_REGION_MAP[regionCd as keyof typeof ES_REGION_MAP]
       : (regionCd || "Desconocida");
 
-  // Tracking
+  // Tracking params
   const campaignRaw = (url.searchParams.get("c") || "default").toLowerCase();
   const campaignPretty = toTitleCampaign(campaignRaw);
-  const qrId     = (url.searchParams.get("q") || "").toLowerCase();
+  const qrId = (url.searchParams.get("q") || "").toLowerCase();
 
-  // UA → OS/Browser/Device
-  const os      = pickOS(ua);
+  // UA
+  const os = pickOS(ua);
   const browser = pickBrowser(ua);
-  const device  = pickDevice(ua);
+  const device = pickDevice(ua);
 
-  // Redirección
-  const iosUrl      = "https://apps.apple.com/es/app/snipe/id6743317310";
-  const androidUrl  = "https://play.google.com/store/apps/details?id=com.joinsnipe.mobile.snipe&hl=es";
+  // Redirecciones
+  const iosUrl = "https://apps.apple.com/es/app/snipe/id6743317310";
+  const androidUrl = "https://play.google.com/store/apps/details?id=com.joinsnipe.mobile.snipe&hl=es";
   const fallbackUrl = "https://joinsnipe.com";
   const target = os === "ios" ? iosUrl : os === "android" ? androidUrl : fallbackUrl;
-  const store  = os === "ios" ? "appstore" : os === "android" ? "playstore" : "fallback";
+  const store = os === "ios" ? "appstore" : os === "android" ? "playstore" : "fallback";
 
-  // --- modo debug: ?debug=1 → ver lo que llega y lo que enviamos a Notion ---
+  // --- Modo DEBUG ---
   if (url.searchParams.get("debug") === "1") {
     return new Response(
       JSON.stringify({
+        signature: HANDLER_SIGNATURE,
         ua, os, browser, device,
         headers: {
           country, regionCd, regionNice, city, timezone,
@@ -114,17 +117,13 @@ export default async function handler(req: Request) {
           "x-real-ip": req.headers.get("x-real-ip"),
           "cf-connecting-ip": req.headers.get("cf-connecting-ip")
         },
-        ipAnon,
-        campaignRaw, campaignPretty, qrId,
-        target, store
+        ipAnon, campaignRaw, campaignPretty, qrId, target, store
       }, null, 2),
       { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }
     );
   }
 
-  // --- Notion ---
-  let pageId: string | null = null;
-  let seqNumber: number | null = null;
+  // --- Registro en Notion ---
   try {
     const notionToken = process.env.NOTION_TOKEN!;
     const notionDbId  = process.env.NOTION_DB_ID!;
@@ -135,7 +134,6 @@ export default async function handler(req: Request) {
     };
 
     const provisionalName = `${campaignPretty} / —${qrId ? ` / ${qrId}` : ""}`;
-
     const properties: any = {
       "Name":        { title: [{ text: { content: provisionalName } }] },
       "Timestamp":   { date: { start: new Date(now).toISOString() } },
@@ -153,7 +151,7 @@ export default async function handler(req: Request) {
       "Device":      rt(device)
     };
 
-    const createRes = await fetch("https://api.notion.com/v1/pages", {
+    await fetch("https://api.notion.com/v1/pages", {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -161,46 +159,18 @@ export default async function handler(req: Request) {
         properties
       })
     });
-
-    if (createRes.ok) {
-      const created = await createRes.json();
-      pageId = created.id || null;
-      const seqProp = created?.properties?.["Seq"]?.unique_id;
-      if (seqProp?.number) seqNumber = Number(seqProp.number);
-    } else {
-      const txt = await createRes.text();
-      console.error("Notion create error:", createRes.status, txt);
-    }
-
-    if (pageId && seqNumber == null) {
-      const readRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, { headers });
-      if (readRes.ok) {
-        const page = await readRes.json();
-        const seqProp2 = page?.properties?.["Seq"]?.unique_id;
-        if (seqProp2?.number) seqNumber = Number(seqProp2.number);
-      }
-    }
-
-    if (pageId && seqNumber != null) {
-      const finalName = `${campaignPretty} / ${pad3(seqNumber)}${qrId ? ` / ${qrId}` : ""}`;
-      await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify({
-          properties: { "Name": { title: [{ text: { content: finalName } }] } }
-        })
-      });
-    }
   } catch (err) {
     console.error("Edge Notion exception:", err);
   }
 
+  // --- Redirección final ---
   return new Response(null, {
     status: 302,
     headers: {
       Location: target,
       "Cache-Control": "no-store",
-      "Vary": "User-Agent"
+      "Vary": "User-Agent",
+      "X-QR-Handler": HANDLER_SIGNATURE
     }
   });
 }
