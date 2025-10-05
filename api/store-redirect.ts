@@ -6,10 +6,10 @@ function anonymizeIp(ip: string | null): string {
   const first = ip.split(",")[0].trim();
   if (first.includes(":")) {
     const parts = first.split(":");
-    return parts.slice(0, 4).join(":") + "::/64";   // IPv6 ~/64
+    return parts.slice(0, 4).join(":") + "::/64";
   } else {
     const a = first.split(".");
-    return a.length === 4 ? `${a[0]}.${a[1]}.${a[2]}.0/24` : first; // IPv4 ~/24
+    return a.length === 4 ? `${a[0]}.${a[1]}.${a[2]}.0/24` : first;
   }
 }
 function pickOS(ua: string) {
@@ -17,36 +17,46 @@ function pickOS(ua: string) {
   if (/android/i.test(ua)) return "android";
   return "other";
 }
-// Comunidades autónomas (nombre completo)
+function pickBrowser(ua: string) {
+  const u = ua.toLowerCase();
+  if (u.includes("edg/")) return "edge";
+  if (u.includes("opr/") || u.includes("opera")) return "opera";
+  if (u.includes("firefox/")) return "firefox";
+  if (u.includes("samsungbrowser")) return "samsung";
+  if (u.includes("crios/") || u.includes("chrome/")) return "chrome";
+  if (u.includes("safari/")) return "safari";
+  return "other";
+}
+function pickDevice(ua: string) {
+  const iua = ua.toLowerCase();
+  const isiPad = /ipad/.test(iua);
+  const isiPhone = /iphone/.test(iua);
+  const isAndroid = /android/.test(iua);
+  const isTablet = isiPad || (isAndroid && /tablet/.test(iua));
+  if (isiPad) return "iPad";
+  if (isiPhone) return "iPhone";
+  if (isAndroid && isTablet) return "Android Tablet";
+  if (isAndroid) return "Android Phone";
+  if (/macintosh|windows nt|linux x86_64/i.test(ua)) return "Desktop";
+  return "Other";
+}
 const ES_REGION_MAP: Record<string, string> = {
-  AN: "Andalucía",
-  AR: "Aragón",
-  AS: "Principado de Asturias",
-  CN: "Canarias",
-  CB: "Cantabria",
-  CL: "Castilla y León",
-  CM: "Castilla-La Mancha",
-  CT: "Cataluña",
-  EX: "Extremadura",
-  GA: "Galicia",
-  IB: "Islas Baleares",
-  RI: "La Rioja",
-  MD: "Comunidad de Madrid",
-  MC: "Región de Murcia",
-  NC: "Navarra",
-  PV: "País Vasco",
-  VC: "Comunidad Valenciana",
-  CE: "Ceuta",
-  ML: "Melilla"
+  AN:"Andalucía", AR:"Aragón", AS:"Principado de Asturias", CN:"Canarias", CB:"Cantabria",
+  CL:"Castilla y León", CM:"Castilla-La Mancha", CT:"Cataluña", EX:"Extremadura", GA:"Galicia",
+  IB:"Islas Baleares", RI:"La Rioja", MD:"Comunidad de Madrid", MC:"Región de Murcia",
+  NC:"Navarra", PV:"País Vasco", VC:"Comunidad Valenciana", CE:"Ceuta", ML:"Melilla"
 };
 function toTitleCampaign(raw: string) {
-  // "lanzamiento_octubre-2025" -> "Lanzamiento Octubre 2025"
   const pretty = raw.replace(/[_-]+/g, " ").trim();
   return pretty.replace(/\S+/g, (w) => w[0]?.toUpperCase() + w.slice(1));
 }
 function pad3(n: number) {
   const s = String(n);
   return s.length >= 3 ? s : "0".repeat(3 - s.length) + s;
+}
+function rt(content: string) {
+  const safe = content && content.trim() ? content : "Desconocido";
+  return { rich_text: [{ text: { content: safe } }] };
 }
 
 /** -------- handler -------- */
@@ -55,34 +65,64 @@ export default async function handler(req: Request) {
   const url = new URL(req.url);
   const ua  = req.headers.get("user-agent") || "";
 
-  // Headers de Vercel (rápidos, sin llamadas externas)
+  // --- Geo headers + fallbacks ---
   const country  = req.headers.get("x-vercel-ip-country") || "";
   const regionCd = req.headers.get("x-vercel-ip-country-region") || "";
+  // algunos edge hops pueden no inyectar city/timezone; añadimos fallbacks visibles
   const city     = req.headers.get("x-vercel-ip-city") || "";
   const timezone = req.headers.get("x-vercel-ip-timezone") || "";
-  const ipFirst  = (req.headers.get("x-forwarded-for") || "").split(",")[0].trim();
+
+  // IP: intentar varias cabeceras por seguridad
+  const ipFirst =
+    (req.headers.get("x-forwarded-for") ||
+     req.headers.get("x-real-ip") ||
+     req.headers.get("cf-connecting-ip") ||
+     "").split(",")[0].trim();
   const ipAnon   = anonymizeIp(ipFirst || null);
 
-  // Comunidad autonómica “bonita” en España
+  // Región bonita (ES) o código crudo si no hay mapeo, nunca vacío
   const regionNice =
     country === "ES" && ES_REGION_MAP[regionCd as keyof typeof ES_REGION_MAP]
       ? ES_REGION_MAP[regionCd as keyof typeof ES_REGION_MAP]
-      : regionCd || "Desconocida";
+      : (regionCd || "Desconocida");
 
   // Tracking
   const campaignRaw = (url.searchParams.get("c") || "default").toLowerCase();
-  const campaignPretty = toTitleCampaign(campaignRaw); // para mostrar en Name
+  const campaignPretty = toTitleCampaign(campaignRaw);
   const qrId     = (url.searchParams.get("q") || "").toLowerCase();
 
-  // Redirección por dispositivo (sin poner OS en el nombre)
-  const os = pickOS(ua);
-  const iosUrl     = "https://apps.apple.com/es/app/snipe/id6743317310";
-  const androidUrl = "https://play.google.com/store/apps/details?id=com.joinsnipe.mobile.snipe&hl=es";
-  const fallbackUrl= "https://joinsnipe.com";
+  // UA → OS/Browser/Device
+  const os      = pickOS(ua);
+  const browser = pickBrowser(ua);
+  const device  = pickDevice(ua);
+
+  // Redirección
+  const iosUrl      = "https://apps.apple.com/es/app/snipe/id6743317310";
+  const androidUrl  = "https://play.google.com/store/apps/details?id=com.joinsnipe.mobile.snipe&hl=es";
+  const fallbackUrl = "https://joinsnipe.com";
   const target = os === "ios" ? iosUrl : os === "android" ? androidUrl : fallbackUrl;
   const store  = os === "ios" ? "appstore" : os === "android" ? "playstore" : "fallback";
 
-  // --- 1) Crear la página en Notion (Name provisional con /—) ---
+  // --- modo debug: ?debug=1 → ver lo que llega y lo que enviamos a Notion ---
+  if (url.searchParams.get("debug") === "1") {
+    return new Response(
+      JSON.stringify({
+        ua, os, browser, device,
+        headers: {
+          country, regionCd, regionNice, city, timezone,
+          "x-forwarded-for": req.headers.get("x-forwarded-for"),
+          "x-real-ip": req.headers.get("x-real-ip"),
+          "cf-connecting-ip": req.headers.get("cf-connecting-ip")
+        },
+        ipAnon,
+        campaignRaw, campaignPretty, qrId,
+        target, store
+      }, null, 2),
+      { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }
+    );
+  }
+
+  // --- Notion ---
   let pageId: string | null = null;
   let seqNumber: number | null = null;
   try {
@@ -94,48 +134,44 @@ export default async function handler(req: Request) {
       "Content-Type": "application/json"
     };
 
-    // Name provisional (hasta que tengamos "Seq")
-    const provisionalName =
-      `${campaignPretty} / —${qrId ? ` / ${qrId}` : ""}`;
+    const provisionalName = `${campaignPretty} / —${qrId ? ` / ${qrId}` : ""}`;
 
     const properties: any = {
       "Name":        { title: [{ text: { content: provisionalName } }] },
       "Timestamp":   { date: { start: new Date(now).toISOString() } },
-      "Epoch":       { number: now }, // útil para orden secundario
-      "OS":          { select: { name: os } },       // lo seguimos registrando (no en Name)
-      "Store":       { select: { name: store } },    // idem
-      "Country":     { rich_text: [{ text: { content: country } }] },
-      "Region":      { rich_text: [{ text: { content: regionNice } }] },
-      "City":        { rich_text: [{ text: { content: city } }] },
-      "Timezone":    { rich_text: [{ text: { content: timezone } }] },
-      "IP (anon)":   { rich_text: [{ text: { content: ipAnon } }] },
-      "Campaign":    { rich_text: [{ text: { content: campaignRaw } }] },
-      "QR ID":       { rich_text: [{ text: { content: qrId } }] }
-      // "Seq" es Unique ID y lo genera Notion automáticamente
+      "Epoch":       { number: now },
+      "OS":          { select: { name: os } },
+      "Store":       { select: { name: store } },
+      "Country":     rt(country),
+      "Region":      rt(regionNice),
+      "City":        rt(city),
+      "Timezone":    rt(timezone),
+      "IP (anon)":   rt(ipAnon),
+      "Campaign":    rt(campaignRaw),
+      "QR ID":       rt(qrId || "—"),
+      "Browser":     rt(browser),
+      "Device":      rt(device)
     };
 
     const createRes = await fetch("https://api.notion.com/v1/pages", {
       method: "POST",
       headers,
-      body: JSON.stringify({ parent: { database_id: notionDbId }, properties })
+      body: JSON.stringify({
+        parent: { type: "database_id", database_id: notionDbId },
+        properties
+      })
     });
 
     if (createRes.ok) {
       const created = await createRes.json();
       pageId = created.id || null;
-
-      // Notion suele devolver el valor de unique_id; si está, lo usamos ya
       const seqProp = created?.properties?.["Seq"]?.unique_id;
-      if (seqProp?.number) {
-        seqNumber = Number(seqProp.number);
-      }
+      if (seqProp?.number) seqNumber = Number(seqProp.number);
     } else {
-      // si hay error de validación, lo dejamos en logs pero no rompemos la UX
       const txt = await createRes.text();
       console.error("Notion create error:", createRes.status, txt);
     }
 
-    // --- 2) Si no vino Seq en la respuesta, intentamos leer la página una vez ---
     if (pageId && seqNumber == null) {
       const readRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, { headers });
       if (readRes.ok) {
@@ -145,31 +181,29 @@ export default async function handler(req: Request) {
       }
     }
 
-    // --- 3) Si ya tenemos Seq, actualizamos el Name a "Campaña / 001 [/ qrId]" ---
     if (pageId && seqNumber != null) {
-      const finalName =
-        `${campaignPretty} / ${pad3(seqNumber)}${qrId ? ` / ${qrId}` : ""}`;
-
+      const finalName = `${campaignPretty} / ${pad3(seqNumber)}${qrId ? ` / ${qrId}` : ""}`;
       await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
         method: "PATCH",
         headers,
         body: JSON.stringify({
-          properties: {
-            "Name": { title: [{ text: { content: finalName } }] }
-          }
+          properties: { "Name": { title: [{ text: { content: finalName } }] } }
         })
       });
     }
-  } catch {
-    // nunca bloqueamos la redirección
+  } catch (err) {
+    console.error("Edge Notion exception:", err);
   }
 
-  // Redirección inmediata, sin caché para contar cada escaneo
-  return new Response(null, { status: 302, headers: {
-    Location: target,
-    "Cache-Control": "no-store",
-    "Vary": "User-Agent"
-  }});
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: target,
+      "Cache-Control": "no-store",
+      "Vary": "User-Agent"
+    }
+  });
 }
+
 
 
