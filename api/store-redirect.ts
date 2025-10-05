@@ -13,7 +13,6 @@ function anonymizeIp(ip: string | null): string {
     return first;
   }
 }
-
 function pickOS(ua: string) {
   if (/iphone|ipad|ipod/i.test(ua)) return "ios";
   if (/android/i.test(ua)) return "android";
@@ -41,26 +40,59 @@ function pickDevice(ua: string) {
   return "other";
 }
 
+async function geolocateByIp(ip: string) {
+  // Límite de tiempo muy corto para no afectar UX
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 600);
+  try {
+    const r = await fetch(`https://ipapi.co/${encodeURIComponent(ip)}/json/`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return null;
+    const j = await r.json();
+    return {
+      city: j.city || "",
+      region: j.region || j.region_code || "",
+      country: j.country || j.country_code || "",
+      timezone: j.timezone || ""
+    };
+  } catch {
+    clearTimeout(t);
+    return null;
+  }
+}
+
 export default async function handler(req: Request) {
   const now = Date.now();
   const url = new URL(req.url);
   const ua  = req.headers.get("user-agent") || "";
   const ref = req.headers.get("referer") || "";
 
-  // Geo desde headers de Vercel (country casi siempre; city/region depende del POP)
-  const country  = req.headers.get("x-vercel-ip-country") || "";
-  const region   = req.headers.get("x-vercel-ip-country-region") || "";
-  const city     = req.headers.get("x-vercel-ip-city") || "";
-  const timezone = req.headers.get("x-vercel-ip-timezone") || "";
+  // Headers de Vercel
+  let country  = req.headers.get("x-vercel-ip-country") || "";
+  let region   = req.headers.get("x-vercel-ip-country-region") || "";
+  let city     = req.headers.get("x-vercel-ip-city") || "";
+  let timezone = req.headers.get("x-vercel-ip-timezone") || "";
 
-  const ipRaw  = req.headers.get("x-forwarded-for");
-  const ipAnon = anonymizeIp(ipRaw);
+  const ipRaw  = req.headers.get("x-forwarded-for") || "";
+  const ipFirst = ipRaw.split(",")[0].trim();
+  const ipAnon = anonymizeIp(ipFirst || null);
+
+  // Si no tenemos ciudad/region, intentamos obtenerlas por IP (fallback)
+  if ((!city || !region) && ipFirst) {
+    const g = await geolocateByIp(ipFirst);
+    if (g) {
+      city     = city || g.city;
+      region   = region || g.region;
+      country  = country || g.country;
+      timezone = timezone || g.timezone;
+    }
+  }
 
   // Tracking params
   const campaign = url.searchParams.get("c") || "default";
   const qrId     = url.searchParams.get("q") || "";
 
-  // SO y destino
+  // SO y redirección
   const os = pickOS(ua);
   const iosUrl     = "https://apps.apple.com/es/app/snipe/id6743317310";
   const androidUrl = "https://play.google.com/store/apps/details?id=com.joinsnipe.mobile.snipe&hl=es";
@@ -71,15 +103,15 @@ export default async function handler(req: Request) {
   const browser = pickBrowser(ua);
   const device  = pickDevice(ua);
 
-  // ---- Log a Notion (await para asegurar escritura) ----
+  // ---- Log a Notion ----
   try {
     const notionToken = process.env.NOTION_TOKEN!;
     const notionDbId  = process.env.NOTION_DB_ID!;
-
-    const pageBody = {
+    const body = {
       parent: { database_id: notionDbId },
       properties: {
         "Name":        { title: [{ text: { content: `Scan #${now}` } }] },
+        "ID":          { number: now },
         "Timestamp":   { date: { start: new Date(now).toISOString() } },
         "Epoch":       { number: now },
         "OS":          { select: { name: os } },
@@ -106,9 +138,8 @@ export default async function handler(req: Request) {
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(pageBody)
+      body: JSON.stringify(body)
     });
-
     if (!res.ok) {
       const txt = await res.text();
       console.error("Notion error:", res.status, txt);
@@ -117,7 +148,7 @@ export default async function handler(req: Request) {
     console.error("Notion fetch failed:", e);
   }
 
-  // Sin caché para contar cada escaneo
+  // Sin caché para registrar TODOS los escaneos
   return new Response(null, {
     status: 302,
     headers: {
