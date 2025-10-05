@@ -1,54 +1,62 @@
-export const config = { runtime: "edge" };
-
-const IOS_URL     = "https://apps.apple.com/es/app/snipe/id6743317310";
-const ANDROID_URL = "https://play.google.com/store/apps/details?id=com.joinsnipe.mobile.snipe&hl=es";
-const FALLBACK_URL= "https://joinsnipe.com/descargar"; // opcional
+export const config = {
+  runtime: "edge",
+};
 
 export default async function handler(req: Request) {
+  const userAgent = req.headers.get("user-agent") || "";
+  const country = req.headers.get("x-vercel-ip-country") || "Unknown";
   const url = new URL(req.url);
-  const ua  = (req.headers.get("user-agent") || "").toLowerCase();
 
-  // Forzado en test: ?os=ios|android|fallback
-  const forced = url.searchParams.get("os");
-  const targetForced =
-    forced === "ios" ? IOS_URL :
-    forced === "android" ? ANDROID_URL :
-    forced === "fallback" ? FALLBACK_URL : null;
-  if (targetForced) return htmlRedirect(targetForced);
+  // Parámetros de tracking opcionales
+  const campaign = url.searchParams.get("c") || "default";
+  const qrVersion = url.searchParams.get("v") || "1";
 
-  const isAndroid = /\bandroid\b|silk|kindle|kftt|kfps|kf[a-z0-9]+/.test(ua);
-  const isIOS     = /\b(iphone|ipad|ipod|ios)\b/.test(ua) || (ua.includes("mac os x") && ua.includes("mobile"));
+  // Detección simple de SO
+  let os = "other";
+  if (/android/i.test(userAgent)) os = "android";
+  else if (/iphone|ipad|ipod/i.test(userAgent)) os = "ios";
 
-  const target = isIOS ? IOS_URL : isAndroid ? ANDROID_URL : FALLBACK_URL;
-  return htmlRedirect(target);
-}
+  // URLs oficiales de las stores
+  const iosUrl = "https://apps.apple.com/es/app/snipe/id6743317310";
+  const androidUrl = "https://play.google.com/store/apps/details?id=com.joinsnipe.mobile.snipe&hl=es";
+  const fallbackUrl = "https://joinsnipe.com";
 
-function htmlRedirect(target: string) {
-  const body = `<!doctype html>
-<html lang="es"><head>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="0;url=${target}">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Redirigiendo…</title>
-<script>location.replace(${JSON.stringify(target)});</script>
-<style>
-  body{margin:0;display:grid;place-items:center;height:100vh;font-family:system-ui,Segoe UI,Roboto,Arial}
-  .card{padding:24px;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.1)}
-</style>
-</head><body>
-  <div class="card">
-    <noscript>Si no te hemos redirigido, <a href="${target}">toca aquí</a>.</noscript>
-    <p>Redirigiendo…</p>
-  </div>
-</body></html>`;
+  const redirectUrl =
+    os === "ios" ? iosUrl :
+    os === "android" ? androidUrl :
+    fallbackUrl;
 
-  return new Response(body, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "private, max-age=300", // 5 min por dispositivo
-      "Vary": "User-Agent",
-      "X-Content-Type-Options": "nosniff"
-    }
-  });
+  // Lógica de logging a Notion
+  try {
+    const notionToken = process.env.NOTION_TOKEN!;
+    const notionDb = process.env.NOTION_DB_ID!;
+    const headers = {
+      "Authorization": `Bearer ${notionToken}`,
+      "Notion-Version": "2022-06-28",
+      "Content-Type": "application/json",
+    };
+
+    const pageBody = {
+      parent: { database_id: notionDb },
+      properties: {
+        "Name": { title: [{ text: { content: `Scan - ${new Date().toISOString()}` } }] },
+        "Timestamp": { date: { start: new Date().toISOString() } },
+        "OS": { select: { name: os } },
+        "Country": { rich_text: [{ text: { content: country } }] },
+        "Campaign": { rich_text: [{ text: { content: campaign } }] },
+        "QR Version": { rich_text: [{ text: { content: qrVersion } }] },
+      },
+    };
+
+    await fetch("https://api.notion.com/v1/pages", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(pageBody),
+    });
+  } catch (err) {
+    console.error("Error Notion:", err);
+  }
+
+  // Respuesta HTTP
+  return Response.redirect(redirectUrl, 302);
 }
