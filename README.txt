@@ -1,3 +1,6 @@
+qr embajador meter qr planet en url
+
+
 🧭 POR QUÉ DEBEMOS DOCUMENTARLO
 
 Porque todo esto (QR dinámico + redirección inteligente + analítica por campaña) es parte del core de adquisición orgánica de Snipe.
